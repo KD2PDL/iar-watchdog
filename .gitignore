@@ -1,0 +1,5 @@
+# Captured vendor config encodes an agency's IamResponding credentials. Never commit it.
+autolauncher-config/
+launch_data.txt
+terms.txt
+*.exe
