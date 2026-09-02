@@ -36,8 +36,10 @@ Press **M** during the countdown (or pass `-Menu`) for the menu; **X** cancels.
                [8] Set Auto-Logon        [No]
                [9] Retire Old Launchers  [Yes]
                [H] Harden Windows        [No]
+               [D] Debloat Windows       [No]
                _______________________________________________
 
+               [V] TV Watchdog  (Roku)
                [T] Test Watchdog
                [L] View Watchdog Log
                [0] Exit
@@ -193,6 +195,82 @@ watchdog close the board itself.
 and ~11 assertions plus a live test that opens a non-matching window and waits for the
 watchdog to close it.
 
+**`tv-watchdog-install.ps1`** — guards the *screen*, not the picture.
+
+The Chrome watchdog makes sure the PC is sending the board. That is a different problem
+from the television actually showing it. A set that has switched itself off, drifted to
+another input, or drawn its own screensaver over a perfectly good signal looks identical
+to a dead board from the room, and identical to a healthy one from every monitoring tool
+you own — the PC is fine, the network is fine, nothing alerts.
+
+Roku exposes an unauthenticated control interface (ECP) on port 8060, so the board PC can
+interrogate the TV over the LAN. Every `-IntervalMin` minutes the installed
+`tv-watchdog.ps1`:
+
+1. Reads `power-mode` and the active input
+2. Sends `keypress/PowerOn` if the set is off
+3. Sends `launch/<input>` **unconditionally**
+
+Step 3 is unconditional on purpose. A screensaver still reports `PowerOn` on the correct
+input for the entire time it is up, so no status check can see it. Relaunching the input
+the set is already on dismisses it and is otherwise a no-op. The cost is a brief flicker
+each cycle, which is why disabling the screensaver in the TV's own menu is worth doing
+where somebody can get to the remote — Roku's ECP is read-only for settings, so that part
+cannot be automated.
+
+Reach it from the deploy menu with `[V]`, or directly:
+
+```powershell
+$s = irm https://raw.githubusercontent.com/KD2PDL/iar-watchdog/main/tv-watchdog-install.ps1
+& ([scriptblock]::Create($s)) -TvAddress 192.168.1.50
+```
+
+```
+        ______________________________________________________________
+
+               [1] Install TV Watchdog  (Roku)
+               [2] Remove TV Watchdog
+               _______________________________________________
+
+               [3] TV Address            [192.168.1.50]
+               [4] Board Input           [HDMI 1 (eARC)]
+               [5] Check Every           [5 min]
+               _______________________________________________
+
+               [S] Scan For TVs
+               [Q] Show TV Status
+               [L] View TV Watchdog Log
+               [F] Amazon Fire TV  (coming soon)
+               [0] Back
+        ______________________________________________________________
+```
+
+`[S]` finds the sets for you rather than making anyone read an IP off a TV menu, and
+`[4]` asks the television which inputs it actually has and prints them by name, so the
+question becomes "which one is the board PC plugged into?" instead of "what is the
+string for HDMI 1?".
+
+| Parameter | Default | Meaning |
+| --- | --- | --- |
+| `-TvAddress` | — | Bare IP or full URL. Required to install |
+| `-TvInput` | `tvinput.hdmi1` | The input the board PC is on. `-Inputs` lists the real ones |
+| `-IntervalMin` | `5` | Minutes between checks |
+| `-Discover` | — | Find Roku TVs and return them |
+| `-Inputs` | — | List the inputs a set reports |
+| `-Status` | — | Power, input, network and selected screensaver |
+| `-Subnet` | *(auto)* | First three octets for the sweep, e.g. `192.168.1` |
+| `-Uninstall` | — | Remove the task and script, keep the log |
+
+**Discovery falls back to a sweep.** SSDP (`ST: roku:ecp`) is one packet and instant, but
+managed switches filter multicast and it never crosses a VPN. When SSDP returns nothing,
+it knocks on 8060 across the local /24 instead, which is slower but works from a
+technician's laptop on the far end of a tunnel.
+
+**It refuses to install against a set that does not answer,** the same way the Chrome
+watchdog aborts when no live window matches `-KioskTitle`. It also warns when the TV is on
+Wi-Fi: the watchdog can only reach it while it is on the network, so a wireless dropout is
+the one fault this design cannot correct.
+
 ## Design notes
 
 **Startup shortcut, not a scheduled task.** `MainWindowHandle` and `PostMessage` need
@@ -200,6 +278,14 @@ the logged-in user's own session; scheduled tasks land in session 0 or the wrong
 session and see nothing. This is also why running the bootstrap from an RMM installs
 everything but cannot start it — it goes live on the kiosk user's next login, and the
 bootstrap says so when it detects session 0.
+
+**The TV watchdog is a scheduled task, and the Chrome watchdog is not.** They want
+opposite things. The Chrome watchdog needs `MainWindowHandle` and `PostMessage`, which
+only exist inside the logged-in user's session. The TV watchdog talks to a device over
+HTTP and needs no session at all — and must not have one, because a task running as the
+kiosk user blinks a console onto the board every cycle. Running it as SYSTEM puts it in
+session 0, which has no display attached, so nothing ever renders. It also keeps working
+when the board itself is not logged in.
 
 **`conhost --headless`, not a VBS launcher.** `powershell -WindowStyle Hidden` still
 flashes a console; `wscript.exe` + `launcher.vbs` works but Windows 11 is deprecating
@@ -221,7 +307,14 @@ discovered at install time and recorded on the kiosk in `kiosk-url.txt`.
 ```powershell
 Get-Content "C:\kiosk-watchdog\watchdog.log" -Tail 20 -Wait
 powershell -ExecutionPolicy Bypass -File "C:\kiosk-watchdog\bin\watchdog-test.ps1"
+
+# TV watchdog - one line per check
+Get-Content "C:\kiosk-watchdog\tv-watchdog.log" -Tail 20 -Wait
 ```
+
+A healthy TV log shows `ok  power=PowerOn input=tvinput.hdmi1` every cycle. `WAKE` means
+the set was found off, `INPUT` that it had drifted, and `UNREACHABLE` that it did not
+answer — brief during a reboot, persistent means the TV has dropped off the network.
 
 A healthy log shows `OK - kiosk window active` every two minutes. If a relaunch lands
 on a login page, the site's saved session or token has gone stale — get a fresh URL and

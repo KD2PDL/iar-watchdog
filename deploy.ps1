@@ -169,15 +169,16 @@ function Show-Menu($set) {
         Toggle D "Debloat Windows"       $set.Debloat      $(if ($set.Debloat) { "Yes" } else { "No" })
         SubRule
         Write-Host ""
+        Item V "TV Watchdog  (Roku)"
         Item T "Test Watchdog"
         Item L "View Watchdog Log"
         Item 0 "Exit"
         Rule
         Write-Host ""
         Write-Host "       " -NoNewline
-        Write-Host "Choose a menu option using your keyboard [1,2,3,4,5,6,7,8,9,H,D,T,L,0]" -ForegroundColor $G
+        Write-Host "Choose a menu option using your keyboard [1,2,3,4,5,6,7,8,9,H,D,V,T,L,0]" -ForegroundColor $G
 
-        switch (ReadChoice @('1','2','3','4','5','6','7','8','9','H','D','T','L','0')) {
+        switch (ReadChoice @('1','2','3','4','5','6','7','8','9','H','D','V','T','L','0')) {
             '1' { Clear-Host; Invoke-Deploy $set; Write-Host ""; Write-Host "Press any key..." -ForegroundColor $G; [void][Console]::ReadKey($true) }
             '2' { Clear-Host
                   $t = $set.PSObject.Copy(); $t.Provision = $false; $t.Harden = $false; $t.ClearStartup = $false
@@ -227,6 +228,7 @@ function Show-Menu($set) {
                       Write-Host "  Enable it? [Y/N]" -ForegroundColor $G
                       if ((ReadChoice @('Y','N')) -eq 'Y') { $set.Debloat = $true }
                   } }
+            'V' { Show-TvMenu }
             'T' { Clear-Host
                   $t = Join-Path $InstallDir "bin\watchdog-test.ps1"
                   if (Test-Path $t) { & $t -InstallDir $InstallDir -KioskTitle $set.Title }
@@ -236,6 +238,139 @@ function Show-Menu($set) {
                   $log = Join-Path $InstallDir "watchdog.log"
                   if (Test-Path $log) { Get-Content $log -Tail 30 } else { Write-Host "No log yet." -ForegroundColor $Y }
                   Write-Host ""; Write-Host "Press any key..." -ForegroundColor $G; [void][Console]::ReadKey($true) }
+            '0' { return }
+        }
+    }
+}
+
+# ------------------------------------------------------------------ TV menu
+# The Chrome watchdog guards the picture the PC sends. This guards the screen showing
+# it. Separate menu because it is a different device with a different failure set.
+function Get-TvScript {
+    if (-not $script:TvScript) { $script:TvScript = irm "$Repo/tv-watchdog-install.ps1" }
+    [scriptblock]::Create($script:TvScript)
+}
+
+function Select-Tv($tv) {
+    Write-Host ""
+    Write-Host "       Scanning for Roku TVs..." -ForegroundColor $C
+    $found = @()
+    try { $found = @(& (Get-TvScript) -Discover) } catch { }
+    if (-not $found) {
+        Write-Host "       Nothing answered. Enter the address by hand." -ForegroundColor $Y
+        $v = Read-Host "       TV address"
+        if ($v) { $tv.Address = $v.Trim() }
+        return
+    }
+    Write-Host ""
+    for ($i = 0; $i -lt $found.Count; $i++) {
+        Write-Host ("       [{0}] {1,-15} {2}  ({3})" -f ($i + 1), $found[$i].Address, $found[$i].Name, $found[$i].Model)
+    }
+    Write-Host "       [M] Type an address by hand"
+    Write-Host ""
+    $keys = @('M') + (1..$found.Count | ForEach-Object { "$_" })
+    $k = ReadChoice $keys
+    if ($k -eq 'M') { $v = Read-Host "       TV address"; if ($v) { $tv.Address = $v.Trim() } }
+    else {
+        $tv.Address = $found[[int]$k - 1].Address
+        $tv.Input = ""; $tv.InputLabel = "(pick one)"   # inputs differ per set
+    }
+}
+
+function Select-TvInput($tv) {
+    if (-not $tv.Address) { Write-Host ""; Write-Host "       Set the TV address first." -ForegroundColor $Y; Start-Sleep 2; return }
+    Write-Host ""
+    Write-Host "       Asking the TV which inputs it has..." -ForegroundColor $C
+    $ins = @()
+    try { $ins = @(& (Get-TvScript) -TvAddress $tv.Address -Inputs) } catch { }
+    if (-not $ins) {
+        Write-Host "       TV did not answer. Enter the input id by hand (e.g. tvinput.hdmi1)." -ForegroundColor $Y
+        $v = Read-Host "       Input id"
+        if ($v) { $tv.Input = $v.Trim(); $tv.InputLabel = $v.Trim() }
+        return
+    }
+    Write-Host ""
+    Write-Host "       Which one is the board PC plugged into?" -ForegroundColor $G
+    for ($i = 0; $i -lt $ins.Count; $i++) {
+        Write-Host ("       [{0}] {1,-22} {2}" -f ($i + 1), $ins[$i].Label, $ins[$i].Id)
+    }
+    Write-Host ""
+    $k = ReadChoice (1..$ins.Count | ForEach-Object { "$_" })
+    $tv.Input = $ins[[int]$k - 1].Id
+    $tv.InputLabel = $ins[[int]$k - 1].Label
+}
+
+function Show-TvMenu {
+    $tv = [pscustomobject]@{ Address = ""; Input = "tvinput.hdmi1"; InputLabel = "HDMI 1"; IntervalMin = 5 }
+    while ($true) {
+        Clear-Host
+        $Host.UI.RawUI.WindowTitle = "TV Watchdog"
+        Write-Host ""
+        Write-Host "                        TV Watchdog" -ForegroundColor $C
+        Write-Host ""
+        Write-Host "        Keeps the television awake and on the board's input."
+        Rule
+        Write-Host ""
+        Item 1 "Install TV Watchdog  (Roku)"
+        Item 2 "Remove TV Watchdog"
+        SubRule
+        Write-Host ""
+        ItemVal 3 "TV Address" $(if ($tv.Address) { $tv.Address } else { "(not set - scan)" })
+        ItemVal 4 "Board Input" $tv.InputLabel
+        ItemVal 5 "Check Every" "$($tv.IntervalMin) min"
+        SubRule
+        Write-Host ""
+        Item S "Scan For TVs"
+        Item Q "Show TV Status"
+        Item L "View TV Watchdog Log"
+        Item F "Amazon Fire TV  (coming soon)"
+        Item 0 "Back"
+        Rule
+        Write-Host ""
+        Write-Host "       " -NoNewline
+        Write-Host "Choose a menu option using your keyboard [1,2,3,4,5,S,Q,L,F,0]" -ForegroundColor $G
+
+        switch (ReadChoice @('1','2','3','4','5','S','Q','L','F','0')) {
+            '1' { Clear-Host
+                  if (-not $tv.Address) { Write-Host "Set the TV address first - [S] scans for it." -ForegroundColor $Y }
+                  elseif (-not $tv.Input) { Write-Host "Pick the input the board PC is plugged into - [4]." -ForegroundColor $Y }
+                  else { & (Get-TvScript) -TvAddress $tv.Address -TvInput $tv.Input -IntervalMin $tv.IntervalMin -InstallDir $InstallDir }
+                  Write-Host ""; Write-Host "Press any key..." -ForegroundColor $G; [void][Console]::ReadKey($true) }
+            '2' { Clear-Host; & (Get-TvScript) -Uninstall -InstallDir $InstallDir
+                  Write-Host ""; Write-Host "Press any key..." -ForegroundColor $G; [void][Console]::ReadKey($true) }
+            '3' { Select-Tv $tv }
+            '4' { Select-TvInput $tv }
+            '5' { Write-Host ""; $v = Read-Host "       Minutes between checks"
+                  if ($v -match '^\d+$' -and [int]$v -ge 1) { $tv.IntervalMin = [int]$v } }
+            'S' { Select-Tv $tv }
+            'Q' { Clear-Host
+                  if ($tv.Address) { try { & (Get-TvScript) -TvAddress $tv.Address -Status | Format-List }
+                                     catch { Write-Host "TV did not answer at $($tv.Address)." -ForegroundColor $Y } }
+                  else { Write-Host "Set the TV address first." -ForegroundColor $Y }
+                  Write-Host ""; Write-Host "Press any key..." -ForegroundColor $G; [void][Console]::ReadKey($true) }
+            'L' { Clear-Host
+                  $tl = Join-Path $InstallDir "tv-watchdog.log"
+                  if (Test-Path $tl) { Get-Content $tl -Tail 30 } else { Write-Host "No TV watchdog log yet." -ForegroundColor $Y }
+                  Write-Host ""; Write-Host "Press any key..." -ForegroundColor $G; [void][Console]::ReadKey($true) }
+            'F' { Clear-Host
+                  Write-Host ""
+                  Write-Host "  Amazon Fire TV - coming soon." -ForegroundColor $C
+                  Write-Host ""
+                  Write-Host "  Fire TV has no open control port. It is Android underneath, so the"
+                  Write-Host "  equivalent is ADB over TCP 5555, which has to be switched on at the set:"
+                  Write-Host ""
+                  Write-Host "    Settings > My Fire TV (or Device & Software) > About"
+                  Write-Host "    Highlight the device name, press Select 7 times"
+                  Write-Host "    Developer options > ADB Debugging > ON"
+                  Write-Host ""
+                  Write-Host "  The first connection then puts an RSA prompt on the TV that somebody has"
+                  Write-Host "  to accept with the remote, so it cannot be done remotely." -ForegroundColor $Y
+                  Write-Host ""
+                  Write-Host "  Better news: Fire TV lets the screensaver be turned off outright"
+                  Write-Host "  (settings put secure screensaver_enabled 0), which Roku does not, so those"
+                  Write-Host "  sets may not need a watchdog at all."
+                  Write-Host ""
+                  Write-Host "Press any key..." -ForegroundColor $G; [void][Console]::ReadKey($true) }
             '0' { return }
         }
     }
